@@ -15,8 +15,14 @@ import { Text } from "@mariozechner/pi-tui";
 import { Type } from "@sinclair/typebox";
 
 const MAX_TASK_ARG_LENGTH = 4000;
+type ProviderName = "pi" | "agy";
+const modelFor = (provider: ProviderName, model?: string) => {
+	if (model) return model;
+	if (provider === "agy") return "Claude Sonnet 4.6 (Thinking)";
+	return undefined;
+};
 
-const MINIMAL_SYSTEM_PROMPT = `You are a subagent running in an isolated pi process with access to file system and shell tools.
+const MINIMAL_SYSTEM_PROMPT = `You are a subagent running in an isolated CLI process with access to file system and shell tools.
 
 Your job is to focus exclusively on the assigned task, use tools as needed, and provide a clear, concise report or summary at the end.
 
@@ -38,14 +44,33 @@ function getPiInvocation(args: string[]): { command: string; args: string[] } {
 	return { command: "pi", args };
 }
 
+function getInvocation(provider: ProviderName, args: string[], model?: string): { command: string; args: string[] } {
+	if (provider === "agy") {
+		const argsOut: string[] = [];
+		const m = modelFor("agy", model);
+		if (m) argsOut.push("--model", m);
+		argsOut.push("-p", args[args.length - 1]);
+		return { command: "agy", args: argsOut };
+	}
+	return getPiInvocation(args);
+}
+
 async function runSubagent(
 	cwd: string,
 	task: string,
 	skills: string[],
 	signal?: AbortSignal,
 	onUpdate?: (result: AgentToolResult) => void,
+	provider: ProviderName = "pi",
+	model?: string,
 ): Promise<string> {
+	if (provider === "agy" && skills.length > 0) throw new Error("skills are only supported with provider=pi for now");
+
 	const args: string[] = ["--mode", "json", "-p", "--no-session"];
+
+	if (provider === "pi" && model) {
+		args.push("--model", model);
+	}
 
 	for (const skill of skills) {
 		args.push("--skill", skill);
@@ -61,15 +86,16 @@ async function runSubagent(
 		await fs.promises.writeFile(promptFile, MINIMAL_SYSTEM_PROMPT, { encoding: "utf-8", mode: 0o600 });
 		args.push("--append-system-prompt", promptFile);
 
-		if (task.length > MAX_TASK_ARG_LENGTH) {
-			const taskFile = path.join(tmpDir, "task.md");
-			await fs.promises.writeFile(taskFile, task, { encoding: "utf-8", mode: 0o600 });
-			args.push(`Task: Please read ${taskFile} and follow the instructions there.`);
-		} else {
-			args.push(`Task: ${task}`);
-		}
+		const taskPrompt = task.length > MAX_TASK_ARG_LENGTH
+			? await (async () => {
+				const taskFile = path.join(tmpDir!, "task.md");
+				await fs.promises.writeFile(taskFile, task, { encoding: "utf-8", mode: 0o600 });
+				return `Task: Please read ${taskFile} and follow the instructions there.`;
+			})()
+			: `Task: ${task}`;
+		args.push(provider === "agy" ? `${MINIMAL_SYSTEM_PROMPT}\n\n${taskPrompt}` : taskPrompt);
 
-		const invocation = getPiInvocation(args);
+		const invocation = getInvocation(provider, args, model);
 		const proc = spawn(invocation.command, invocation.args, {
 			cwd,
 			shell: false,
@@ -78,6 +104,7 @@ async function runSubagent(
 		});
 
 		let buffer = "";
+		let stdout = "";
 		let stderr = "";
 		const messages: Message[] = [];
 
@@ -121,6 +148,7 @@ async function runSubagent(
 		};
 
 		proc.stdout.on("data", (data) => {
+			stdout += data.toString();
 			buffer += data.toString();
 			const lines = buffer.split("\n");
 			buffer = lines.pop() || "";
@@ -171,6 +199,7 @@ async function runSubagent(
 			}
 		}
 
+		if (provider === "agy") return stdout.trim();
 		return "";
 	} finally {
 		if (tmpDir) {
@@ -190,6 +219,10 @@ const SubagentParams = Type.Object({
 			description: "Optional startup skills to load into the subagent process",
 		}),
 	),
+	provider: Type.Optional(Type.Union([Type.Literal("pi"), Type.Literal("agy")], {
+		description: "CLI provider to run. Defaults to pi.",
+	})),
+	model: Type.Optional(Type.String({ minLength: 1, description: "Model id for the provider. Defaults to provider's default." })),
 });
 
 export default function (pi: ExtensionAPI) {
@@ -200,8 +233,8 @@ export default function (pi: ExtensionAPI) {
 	pi.registerTool({
 		name: "subagent",
 		label: "Subagent",
-		description: "Delegate tasks to fresh pi subagents with isolated context windows. You may invoke multiple subagents in parallel via separate tool calls. Each subagent returns a concise summary or report when its work is done. Optional startup skills can be preloaded.",
-		promptSnippet: "Delegate a task to an isolated subagent process",
+		description: "Delegate tasks to fresh pi or agy subagents with isolated context windows. You may invoke multiple subagents in parallel via separate tool calls. Each subagent returns a concise summary or report when its work is done. Optional startup skills can be preloaded for pi.",
+		promptSnippet: "Delegate a task to an isolated subagent process; provider may be pi or agy",
 		promptGuidelines: [
 			"Delegate non-trivial, self-contained tasks to subagents so you can stay focused on the overall picture.",
 		],
@@ -209,7 +242,7 @@ export default function (pi: ExtensionAPI) {
 
 		async execute(_toolCallId, params, signal, onUpdate, ctx) {
 			try {
-				const output = await runSubagent(ctx.cwd, params.task, params.skills ?? [], signal, onUpdate);
+				const output = await runSubagent(ctx.cwd, params.task, params.skills ?? [], signal, onUpdate, params.provider ?? "pi", params.model);
 				return {
 					content: [{ type: "text", text: output || "(no output)" }],
 				};
@@ -223,7 +256,7 @@ export default function (pi: ExtensionAPI) {
 
 		renderCall(args, theme) {
 			const taskPreview = args.task.length > 60 ? args.task.slice(0, 60) + "..." : args.task;
-			let text = theme.fg("toolTitle", theme.bold("subagent ")) + theme.fg("dim", taskPreview);
+			let text = theme.fg("toolTitle", theme.bold("subagent ")) + theme.fg("dim", `[${args.provider ?? "pi"}${args.model ? `/${args.model}` : ""}] ${taskPreview}`);
 			const skillsArr = args.skills ?? [];
 			if (skillsArr.length > 0) {
 				text += ` ${theme.fg("accent", `+${skillsArr.length} skills`)}`;

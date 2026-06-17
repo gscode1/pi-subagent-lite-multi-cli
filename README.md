@@ -1,13 +1,18 @@
-# @jerryan/pi-subagent-lite
+# pi-subagent-lite-multi-cli
 
 A minimal pi extension that delegates tasks to isolated subagent processes.
+
+> **Fork notice.** This is a fork of [`@jerryan/pi-subagent-lite`](https://github.com/JerryAZR/pi-subagent-lite) (MIT, © jerryan). Enhancements over upstream:
+> - **`provider` parameter** — choose `pi` or `agy` CLI per call (default `pi`).
+> - **`model` parameter** — pick a model per call, e.g. `Claude Opus 4.6 (Thinking)` for reasoning, `Gemini 3.5 Flash (Low)` for cheap work.
+> Same minimal UX, isolated context, streamed progress, final text returned.
 
 ## What makes this different?
 
 Most subagent extensions ship with heavy abstractions: agent definition files, configurable models, working-directory overrides, and a kitchen sink of rarely-used parameters. **This one doesn't.**
 
 - **Zero setup**: Install via pi and use it in the next session. No agent directories to manage, no agent definitions to write.
-- **Minimal interface**: Only `task` and optional `skills`. We removed `model`, `cwd`, `agent`, and other parameters that add more confusion than value.
+- **Minimal interface**: `task` plus optional `provider`, `model`, and `skills`. We removed `cwd`, `agent`, and other parameters that add more confusion than value.
 - **No agent definitions**: Unlike almost every other subagent tool, we don't use `~/.pi/agent/agents/*.md` or any custom agent discovery. If you need specialization, **reuse your existing pi skills** via the `skills` parameter.
 - **One focused system prompt**: Every subagent gets the same lean, task-oriented prompt designed for delegation and clear reporting.
 - **Transparent long-task handling**: Tasks longer than 4000 chars are automatically spilled to a temp file so they never hit CLI length limits.
@@ -62,8 +67,16 @@ You can also invoke multiple subagents in parallel by making separate tool calls
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
 | `task` | `string` | Yes | The task to delegate to the subagent |
-| `skills` | `string[]` | No | Optional skill paths or names to load via `--skill` |
+| `provider` | `"pi" \| "agy"` | No | CLI to run. Defaults to `pi`. |
+| `model` | `string` | No | Model id for the provider (e.g. `Claude Opus 4.6 (Thinking)`, `Gemini 3.5 Flash (Low)`). |
+| `skills` | `string[]` | No | Optional skill paths or names to load via `--skill` (pi only) |
+
+### Example: route by purpose
+
+```
+Delegate the design decision to agy/Opus, then a cheap implementation pass to agy/Gemini Flash.
+```
 
 ## License
 
-MIT © jerryan
+MIT, inherited from upstream. See upstream NOTICE for original copyright.

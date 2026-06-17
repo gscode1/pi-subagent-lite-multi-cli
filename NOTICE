@@ -1,0 +1,5 @@
+pi-subagent-lite-multi-cli
+
+Forked from @jerryan/pi-subagent-lite (https://github.com/JerryAZR/pi-subagent-lite).
+Original work: Copyright (c) jerryan, MIT License.
+Fork changes: provider/model selection for pi and agy CLIs.
